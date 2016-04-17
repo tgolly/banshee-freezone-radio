@@ -44,7 +44,7 @@ class BansheeTrack:
         self.track_row = track_row
 
         self.source = track_row[0]              # 5 = Radio
-        self.trackid = track_row[1]             # Unique
+        self.id = track_row[1]                  # Unique
         self.artistid = track_row[2]            # ??
         self.url = track_row[7]
         self.title = track_row[15]              # 'Soma FM: The Trip'
@@ -54,6 +54,32 @@ class BansheeTrack:
         self.dateadded = track_row[38]          # epoch
         self.dateupdated = track_row[39]
         self.lastsyncedstamp = track_row[42]
+
+    # Returns a string that can be used in a SQL INSERT statement
+    def rowstr(self):
+        row = list(BANSHEE_NEW_RADIO_TUPLE)
+        row[0] = self.source
+        row[1] = self.id
+        row[2] = self.artistid
+        row[7] = self.url
+        row[15] = self.title
+        row[16] = self.titlelowered
+        row[25] = self.genre
+        row[31] = self.comment
+        row[38] = self.dateadded
+        row[39] = self.dateupdated
+        row[42] = self.lastsyncedstamp
+
+        # Python 'None' should be NULL fields in SQLite
+        for i in range(0, len(row)):
+            if row[i] is None:
+                row[i] = '**FIELD*IS*NULL**'
+
+        result = str(tuple(row)).replace("'**FIELD*IS*NULL**'", 'NULL')
+
+        return result
+
+
         '''
         ('PrimarySourceID', 'TrackID', 'ArtistID', 'AlbumID', 'TagSetID', 'ExternalID', 'MusicBrainzID',
          'Uri', 'MimeType', 'FileSize', 'BitRate', 'SampleRate', 'BitsPerSample', 'Attributes',
@@ -78,8 +104,8 @@ class BansheeDB:
         self.tracks = {}
         self._highest_track_id = 0
 
-        conn = sqlite3.connect(BANSHEE_DB_FILE)
-        self.cursor = conn.cursor()
+        self.conn = sqlite3.connect(BANSHEE_DB_FILE)
+        self.cursor = self.conn.cursor()
         self._read_tracks()
 
     def _list_tables(self):
@@ -88,9 +114,9 @@ class BansheeDB:
         for table in self.cursor.fetchall():
             print table[0]
 
-    def _read_tracks(self):
+    def _read_tracks(self, print_column_names=False):
         self.tracks = {}
-        self.cursor.execute("select * from CoreTracks;")
+        self.cursor.execute("SELECT * FROM CoreTracks;")
         for row in self.cursor.fetchall():
             id = row[1]
             title = row[15]
@@ -100,8 +126,9 @@ class BansheeDB:
             if id > self._highest_track_id:
                 self._highest_track_id = id
 
-        #columns = [ d[0] for d in self.cursor.description ]
-        #print 'Column Names are:', columns
+        if print_column_names:
+            columns = [ d[0] for d in self.cursor.description ]
+            print columns
 
     def list_tracks(self):
         for title,track in self.tracks.items():
@@ -111,19 +138,39 @@ class BansheeDB:
         return self.tracks.get(title)
 
     def update_details(self, title, new_title, new_url, new_genre, new_comment):
-        print 'update_details', title
-        if new_title != self.tracks[title].title:
-            #self.cursor.execute("select * from CoreTracks;")
-            print "title: Updating TITLE %s -> %s" % (self.tracks[title].title, new_title)
-        if new_url != self.tracks[title].url:
-            pass
-        if new_genre != self.tracks[title].genre:
-            pass
-        if new_comment != self.tracks[title].comment:
-            pass
+        track = self.get_track(title)
+        updated = False
+        if new_title != track.title:
+            print "%s: Updating TITLE %s -> %s" % (title, track.title, new_title)
+            self.cursor.execute("UPDATE CoreTracks SET Title = '%s' WHERE TrackID = %d;" % (new_title, track.id))
+            self.cursor.execute("UPDATE CoreTracks SET TitleLowered = '%s' WHERE TrackID = %d;" % (new_title.lower(), track.id))
+            updated = True
+        if new_url != track.url:
+            print "%s: Updating URL %s -> %s" % (title, track.url, new_url)
+            self.cursor.execute("UPDATE CoreTracks SET Uri = '%s' WHERE TrackID = %d;" % (new_url, track.id))
+            updated = True
+        if new_genre != track.genre:
+            print "%s: Updating Genre %s -> %s" % (title, track.genre, new_genre)
+            self.cursor.execute("UPDATE CoreTracks SET Genre = '%s' WHERE TrackID = %d;" % (new_genre, track.id))
+            updated = True
+        if new_comment != track.comment:
+            print "%s: Updating Comment %s -> %s" % (title, track.comment, new_comment)
+            self.cursor.execute("UPDATE CoreTracks SET Comment = '%s' WHERE TrackID = %d;" % (new_comment, track.id))
+            updated = True
+
+        if not updated:
+            print "NO CHANGE."
+
+    def close(self):
+        self.conn.commit()
+        self.conn.close()
 
     def add_track(self, track):
-        pass
+        print "%s: Adding -> %s" % (track.title, track.comment)
+        print track.rowstr()
+        cmd = "INSERT INTO CoreTracks VALUES %s ;" % track.rowstr()
+        print cmd
+        self.cursor.execute(cmd)
 
     def track_exists(self, title):
         return title in self.tracks
@@ -134,11 +181,11 @@ class BansheeDB:
 
 db = BansheeDB()
 #db._list_tables()
-#db.list_tracks()
+db.list_tracks()
 
 #r = requests.get(RSS_LINK)
 #radio_xml = r.text
-tree = ET.parse('/tmp/freezone-radio.rss')
+tree = ET.parse('./freezone-radio.rss')
 root = tree.getroot()
 
 stations = {}
@@ -154,7 +201,7 @@ for item in root.find('channel').findall('item'):
         epoch_now = int(time.time())
         dbtrack = BansheeTrack()
         dbtrack.source = BansheeSources.RADIO
-        dbtrack.trackid = db.next_track_id()
+        dbtrack.id = db.next_track_id()
         dbtrack.url = station.link
         dbtrack.title = station.title
         dbtrack.titleLowered = station.title.lower()
@@ -165,3 +212,9 @@ for item in root.find('channel').findall('item'):
         dbtrack.lastsyncedstamp = epoch_now
 
         db.add_track(dbtrack)
+
+        db.close()
+        sys.exit(0)
+
+db.close()
+
