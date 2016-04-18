@@ -7,8 +7,9 @@ import sqlite3
 import requests
 import xml.etree.ElementTree as ET
 
-RSS_LINK = 'http://freezone.iinet.net.au/rss/freezone-radio.rss'
-RSS_LINK_RAW = 'http://freezone.iinet.net.au/rss/freezone-radio-raw.rss'
+#RSS_LINK = 'http://freezone.iinet.net.au/rss/freezone-radio.rss'
+#RSS_LINK_RAW = 'http://freezone.iinet.net.au/rss/freezone-radio-raw.rss'
+RSS_LINK = 'http://freezone.iinet.net.au/freezone-radio-playlist.rss'
 BANSHEE_DB_FILE = os.path.join(os.environ['HOME'], '.config/banshee-1/banshee.db')
 XML_NS = {'content': 'http://purl.org/rss/1.0/modules/content/'}  # XML Namespace
 BANSHEE_NEW_RADIO_TUPLE = (5, 1, 1, 1, 0, 0, None, None, None, 0, 0, 0, 0, 5, 0, None, None, None, None, 0, 0, 0, 0, 0,
@@ -22,18 +23,44 @@ class BansheeSources:
     PODCASTS = 6
 
 class IINetStation:
+    # http://freezone.iinet.net.au/freezone-radio-playlist.rss
+    #
+    #   <item>
+    #       <title>SomaFM: The Trip</title>
+    #       <link>http://radio1.internode.on.net:8000/284</link>
+    #       <bitrate>128</bitrate>
+    #       <badlang>0</badlang>
+    #       <description>
+    #           From SomaFM.com: Progressive house / trance. Tip top tunes.
+    #       </description>
+    #   </item>
+
     def __init__(self, xml_item):
         self.title = xml_item.find('title').text
-        self.guid = xml_item.find('guid').text
         self.link = xml_item.find('link').text
-        self.rawlink = None
-        self.desc = xml_item.find('content:encoded', XML_NS).text
-        self.thumbnail = None
-        if xml_item.find('thumb') is not None:
-            self.thumbnail = xml_item.find('thumb').get('url', default='')
-        self.category = None
+        self.bitrate = xml_item.find('bitrate').text
+        self.desc = xml_item.find('description').text.strip()
+        self.genre = None
+
+    # Has no stream link, but has the genre
+    # http://freezone.iinet.net.au/rss/freezone-radio.rss
+    #
+    #  <item>
+    #    <title><![CDATA[SomaFM: The Trip]]></title>
+    #    <link>http://freezone.iinet.net.au/radio/fz-radio/house/591</link>
+    #    <guid isPermaLink="false">591</guid>
+    #    <description><![CDATA[<img src="http://asse" width="224" height="126" />
+    #      From SomaFM.com: Progressive house / trance. Tip top tunes.]]>
+    #    </description>
+    #    <content:encoded><![CDATA[Fom SomaFM.com: Pr]]></content:encoded>
+    #    <pubDate>Thu, 01 Jan 1970 00:00:00 +0000</pubDate>
+    #    <thumb url="http://" width="224" height="126"/>
+    #    <category>House</category>
+    #  <item>
+
+    def set_genre(self, xml_item):
         if xml_item.find('category') is not None:
-            self.category = xml_item.find('category').text
+            self.genre = xml_item.find('category').text
 
     def __str__(self):
         return 'Station: %s "%s"' % (self.title, self.desc)
@@ -78,7 +105,6 @@ class BansheeTrack:
         result = str(tuple(row)).replace("'**FIELD*IS*NULL**'", 'NULL')
 
         return result
-
 
         '''
         ('PrimarySourceID', 'TrackID', 'ArtistID', 'AlbumID', 'TagSetID', 'ExternalID', 'MusicBrainzID',
@@ -167,10 +193,9 @@ class BansheeDB:
 
     def add_track(self, track):
         print "%s: Adding -> %s" % (track.title, track.comment)
-        print track.rowstr()
         cmd = "INSERT INTO CoreTracks VALUES %s ;" % track.rowstr()
-        print cmd
         self.cursor.execute(cmd)
+        self._highest_track_id = track.id
 
     def track_exists(self, title):
         return title in self.tracks
@@ -185,18 +210,19 @@ db.list_tracks()
 
 #r = requests.get(RSS_LINK)
 #radio_xml = r.text
-tree = ET.parse('./freezone-radio.rss')
+#tree = ET.parse('./freezone-radio.rss')
+tree = ET.parse('./freezone-radio-playlist.rss')
 root = tree.getroot()
 
 stations = {}
 
 for item in root.find('channel').findall('item'):
-    title = item.find('title').text
+    #title = item.find('title').text
     station = IINetStation(item)
     station_name = station.title.lower()
 
     if db.track_exists(station_name):
-        db.update_details(station_name, station.title, station.link, station.category, station.desc)
+        db.update_details(station_name, station.title, station.link, station.genre, station.desc)
     else:
         epoch_now = int(time.time())
         dbtrack = BansheeTrack()
@@ -205,7 +231,7 @@ for item in root.find('channel').findall('item'):
         dbtrack.url = station.link
         dbtrack.title = station.title
         dbtrack.titleLowered = station.title.lower()
-        dbtrack.genre = station.category
+        dbtrack.genre = station.genre
         dbtrack.comment = station.desc
         dbtrack.dateadded = epoch_now
         dbtrack.dateupdated = epoch_now
@@ -213,8 +239,6 @@ for item in root.find('channel').findall('item'):
 
         db.add_track(dbtrack)
 
-        db.close()
-        sys.exit(0)
 
 db.close()
 
